@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install:*)",
+      "Bash(curl -s -X POST \"https://nakdan-5-1.loadbalancer.dicta.org.il/api\" -H \"Content-Type: application/json\" -d '{\"\"\"\"task\"\"\"\":\"\"\"\"nakdan\"\"\"\",\"\"\"\"data\"\"\"\":\"\"\"\"שלום עולם\"\"\"\",\"\"\"\"genre\"\"\"\":\"\"\"\"modern\"\"\"\",\"\"\"\"addmorph\"\"\"\":false,\"\"\"\"matchaliases\"\"\"\":false,\"\"\"\"keepaliases\"\"\"\":false,\"\"\"\"keepaliaseargs\"\"\"\":false,\"\"\"\"newaliases\"\"\"\":false,\"\"\"\"moraliases\"\"\"\":false,\"\"\"\"keepaliasargs\"\"\"\":false}')",
+      "Bash(node:*)"
+    ]
+  }
+}
