@@ -1,5 +1,6 @@
 const { config, validate } = require('./config');
 const { createClient } = require('./whatsapp');
+const { MessageMedia } = require('whatsapp-web.js');
 const { addNikud } = require('./nikud');
 const { containsLanguage } = require('./language');
 const { translate } = require('./translate');
@@ -50,12 +51,16 @@ async function processQueue(client) {
   processing = true;
 
   while (queue.length > 0) {
-    const { text, senderName, timestamp, groupName } = queue.shift();
+    const { text, senderName, timestamp, groupName, media } = queue.shift();
     try {
-      const nikudText = isHebrew ? await addNikud(text) : null;
+      const nikudText = isHebrew && text ? await addNikud(text) : null;
       const formatted = await formatMessage(text, nikudText, senderName, timestamp, groupName);
-      await client.sendMessage(config.targetGroupId, formatted);
-      console.log(`[bot] Forwarded message from ${senderName}`);
+      if (media) {
+        await client.sendMessage(config.targetGroupId, media, { caption: formatted });
+      } else {
+        await client.sendMessage(config.targetGroupId, formatted);
+      }
+      console.log(`[bot] Forwarded message${media ? ' with media' : ''} from ${senderName}`);
     } catch (err) {
       console.error('[bot] Error processing message:', err.message);
     }
@@ -82,10 +87,15 @@ async function formatMessage(original, nikudText, senderName, timestamp, groupNa
     ? await translate(groupName)
     : null;
   const displayGroup = translatedGroup ? `${groupName} (${translatedGroup})` : groupName;
-  const translation = await translate(original);
-  const translationLine = translation ? `\n🔤 ${config.targetLang.toUpperCase()}: ${translation}` : '';
 
   const header = `${config.botTag} ${displayName} | ${displayGroup} | ${time}`;
+
+  if (!original) {
+    return header;
+  }
+
+  const translation = await translate(original);
+  const translationLine = translation ? `\n🔤 ${config.targetLang.toUpperCase()}: ${translation}` : '';
 
   if (config.addOriginalText && nikudText) {
     return `${header}\n\n📝 מקור: ${original}\n✨ ניקוד: ${nikudText}${translationLine}`;
@@ -135,16 +145,34 @@ async function main() {
     if (discoveryMode) return;
     if (message.fromMe) return;
     if (!config.sourceGroupIds.includes(message.from)) return;
-    if (!message.body || message.body.trim() === '') return;
 
-    const text = message.body;
+    const text = message.body && message.body.trim() ? message.body : null;
+    const hasMedia = message.hasMedia;
+
+    // Skip messages with no text and no media
+    if (!text && !hasMedia) return;
+
     const senderName = await resolveSenderName(client, message) || 'Unknown';
     const groupName = await resolveGroupName(client, message.from);
 
-    if (containsLanguage(text, config.sourceLang)) {
-      queue.push({ text, senderName, timestamp: message.timestamp, groupName });
+    // Download media if present
+    let media = null;
+    if (hasMedia) {
+      try {
+        media = await message.downloadMedia();
+      } catch (err) {
+        console.warn('[bot] Could not download media:', err.message);
+      }
+    }
+
+    if (text && containsLanguage(text, config.sourceLang)) {
+      queue.push({ text, senderName, timestamp: message.timestamp, groupName, media });
       processQueue(client);
-    } else if (config.forwardNonSourceLang) {
+    } else if (media) {
+      // Photo with no source-language text — forward media with header only
+      queue.push({ text, senderName, timestamp: message.timestamp, groupName, media });
+      processQueue(client);
+    } else if (text && config.forwardNonSourceLang) {
       try {
         await client.sendMessage(config.targetGroupId, `${config.botTag} ${senderName}:\n\n${text}`);
         console.log(`[bot] Forwarded non-${config.sourceLang} message from ${senderName}`);
@@ -168,7 +196,34 @@ async function forwardLatestMessage(client, sourceGroupId) {
       return;
     }
 
-    const messages = await chat.fetchMessages({ limit: 50 });
+    // Use pupPage directly to avoid Store.ConversationMsgs.loadEarlierMsgs, which
+    // calls chat.waitForChatLoading() on an undefined chat when the local store
+    // hasn't fully populated yet.
+    const rawMessages = await client.pupPage.evaluate(async (chatId) => {
+      const chatWid = window.Store.WidFactory.createWid(chatId);
+      let chat = window.Store.Chat.get(chatWid);
+      if (!chat) {
+        const result = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);
+        chat = result?.chat;
+      }
+      if (!chat) return [];
+      const msgs = chat.msgs?.getModelsArray() || [];
+      return msgs
+        .filter(m => !m.isNotification)
+        .slice(-50)
+        .map(m => ({
+          id: m.id?._serialized,
+          body: m.body || '',
+          from: m.from?._serialized || m.id?.remote?._serialized || '',
+          author: m.author?._serialized || '',
+          timestamp: m.t || 0,
+          fromMe: !!m.id?.fromMe,
+          hasMedia: !!m.hasMedia,
+          type: m.type || '',
+        }));
+    }, sourceGroupId);
+
+    const messages = rawMessages;
 
     let latest = null;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -188,7 +243,21 @@ async function forwardLatestMessage(client, sourceGroupId) {
     const nikudText = isHebrew ? await addNikud(latest.body) : null;
     const formatted = await formatMessage(latest.body, nikudText, senderName, latest.timestamp, groupName);
 
-    await client.sendMessage(config.targetGroupId, formatted);
+    let media = null;
+    if (latest.hasMedia && latest.id) {
+      try {
+        const fullMsg = await client.getMessageById(latest.id);
+        if (fullMsg) media = await fullMsg.downloadMedia();
+      } catch (err) {
+        console.warn('[bot] Could not download media:', err.message);
+      }
+    }
+
+    if (media) {
+      await client.sendMessage(config.targetGroupId, media, { caption: formatted });
+    } else {
+      await client.sendMessage(config.targetGroupId, formatted);
+    }
     console.log(`[bot] Forwarded latest message from ${senderName}: "${latest.body.slice(0, 50)}..."`);
   } catch (err) {
     console.error('[bot] Error forwarding latest message:', err.message);
