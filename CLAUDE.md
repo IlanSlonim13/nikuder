@@ -14,7 +14,7 @@ WhatsApp bot that listens for messages in a configurable source language across 
 
 ## Architecture
 
-**Message pipeline** (in `src/index.js`): incoming message → filter (source groups, not fromMe, has text) → source language detection → nikud if Hebrew → translate → format → send to target group.
+**Message pipeline** (in `src/index.js`): `message_create` event (fires for incoming messages and the user's own) → filter (source groups, skip the bot's own forwards to the target group, has text or media) → source language detection → nikud if Hebrew → translate → format → send to target group (media forwarded with the formatted text as caption).
 
 - **src/config.js** — loads `.env` via dotenv, validates required group IDs. Supports discovery mode (no group IDs) on first run. Language pair configured via `SOURCE_LANG`/`TARGET_LANG`.
 - **src/whatsapp.js** — creates `whatsapp-web.js` Client with `LocalAuth` (session in `.wwebjs_auth/`). QR display, group listing, reconnection.
