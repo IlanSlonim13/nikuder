@@ -141,10 +141,19 @@ async function main() {
     }
   });
 
-  client.on('message', async (message) => {
+  // message_create fires for incoming messages AND messages sent from this
+  // account (the plain 'message' event never fires for fromMe messages, so
+  // the user's own messages in source groups would be silently dropped).
+  client.on('message_create', async (message) => {
     if (discoveryMode) return;
-    if (message.fromMe) return;
-    if (!config.sourceGroupIds.includes(message.from)) return;
+
+    // For messages we send ourselves, `from` is our own ID and `to` is the chat.
+    const chatId = message.fromMe ? message.to : message.from;
+
+    // Never re-process the bot's own forwards into the target group.
+    if (message.fromMe && chatId === config.targetGroupId) return;
+
+    if (!config.sourceGroupIds.includes(chatId)) return;
 
     const text = message.body && message.body.trim() ? message.body : null;
     const hasMedia = message.hasMedia;
@@ -153,7 +162,7 @@ async function main() {
     if (!text && !hasMedia) return;
 
     const senderName = await resolveSenderName(client, message) || 'Unknown';
-    const groupName = await resolveGroupName(client, message.from);
+    const groupName = await resolveGroupName(client, chatId);
 
     // Download media if present
     let media = null;
