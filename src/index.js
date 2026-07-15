@@ -33,8 +33,24 @@ const groupNames = new Map();
 async function resolveGroupName(client, groupId) {
   if (groupNames.has(groupId)) return groupNames.get(groupId);
   try {
-    const chat = await client.getChatById(groupId);
-    const name = chat.name || groupId;
+    // Read the title straight off the Store model rather than via
+    // client.getChatById(). For groups, wwebjs's getChatModel() calls
+    // GroupMetadata.update(), which throws a minified page error ("r") on
+    // WhatsApp Web builds newer than the one wwebjs 1.34.6 targets. The title
+    // is already on the local model, so none of that machinery is needed.
+    const name = await client.pupPage.evaluate((id) => {
+      try {
+        const Store = window.Store;
+        if (!Store?.WidFactory || !Store?.Chat) return null;
+        const chat = Store.Chat.get(Store.WidFactory.createWid(id));
+        if (!chat) return null;
+        return chat.formattedTitle || chat.name || chat.groupMetadata?.subject || null;
+      } catch {
+        return null;
+      }
+    }, groupId);
+
+    if (!name) return groupId; // don't cache; the Store may still be populating
     groupNames.set(groupId, name);
     return name;
   } catch {
@@ -199,11 +215,10 @@ async function forwardLatestMessage(client, sourceGroupId) {
     const groupName = await resolveGroupName(client, sourceGroupId);
     console.log(`[bot] Looking for latest ${config.sourceLang} message in "${groupName}"...`);
 
-    const chat = await client.getChatById(sourceGroupId);
-    if (!chat) {
-      console.error(`[bot] Source group not found: ${sourceGroupId}`);
-      return;
-    }
+    // No client.getChatById() here: it throws a minified "r" for group chats
+    // (getChatModel -> GroupMetadata.update). The evaluate below resolves the
+    // chat itself and reports its own not-found case, so the call was dead
+    // weight that only ever aborted this function.
 
     // Use pupPage directly to avoid Store.ConversationMsgs.loadEarlierMsgs, which
     // calls chat.waitForChatLoading() on an undefined chat when the local store
