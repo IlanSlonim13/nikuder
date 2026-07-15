@@ -24,7 +24,12 @@ function createClient() {
 
   client.on('ready', async () => {
     console.log('\n✅ WhatsApp connected!\n');
-    await listGroups(client);
+    try {
+      await listGroups(client);
+    } catch (err) {
+      console.error('[whatsapp] Could not list groups:', err.message || err);
+      console.error('[whatsapp] The bot is still running; message forwarding is unaffected.');
+    }
   });
 
   client.on('auth_failure', (msg) => {
@@ -41,9 +46,36 @@ function createClient() {
   return client;
 }
 
+async function getGroups(client) {
+  // Primary path: whatsapp-web.js getChats(). It serializes every chat in one
+  // shot, so a single chat that fails to serialize (e.g. a channel/newsletter
+  // with missing fields) throws for the whole call. Fall back to reading the
+  // Store directly, guarding each chat, if that happens.
+  try {
+    const chats = await client.getChats();
+    return chats
+      .filter(chat => chat.isGroup)
+      .map(g => ({ name: g.name, id: g.id._serialized }));
+  } catch (err) {
+    console.warn('[whatsapp] getChats() failed, falling back to Store query:', err.message || err);
+    return client.pupPage.evaluate(() => {
+      const out = [];
+      for (const chat of window.Store.Chat.getModelsArray()) {
+        try {
+          if (!chat.id || !chat.id.isGroup()) continue;
+          out.push({
+            name: chat.formattedTitle || chat.name || chat.id.user,
+            id: chat.id._serialized,
+          });
+        } catch (_) { /* skip chats that fail to read */ }
+      }
+      return out;
+    });
+  }
+}
+
 async function listGroups(client) {
-  const chats = await client.getChats();
-  const groups = chats.filter(chat => chat.isGroup);
+  const groups = await getGroups(client);
 
   if (groups.length === 0) {
     console.log('No groups found.\n');
@@ -54,7 +86,7 @@ async function listGroups(client) {
   const nameHeader = 'Group Name';
   const idHeader = 'Group ID';
   const maxName = Math.max(nameHeader.length, ...groups.map(g => g.name.length));
-  const maxId = Math.max(idHeader.length, ...groups.map(g => g.id._serialized.length));
+  const maxId = Math.max(idHeader.length, ...groups.map(g => g.id.length));
 
   const pad = (str, len) => str + ' '.repeat(Math.max(0, len - str.length));
   const line = (l, m, r, fill) => l + fill.repeat(maxName + 2) + m + fill.repeat(maxId + 2) + r;
@@ -65,7 +97,7 @@ async function listGroups(client) {
   console.log(line('├', '┼', '┤', '─'));
 
   for (const group of groups) {
-    console.log(`│ ${pad(group.name, maxName)} │ ${pad(group.id._serialized, maxId)} │`);
+    console.log(`│ ${pad(group.name, maxName)} │ ${pad(group.id, maxId)} │`);
   }
 
   console.log(line('└', '┴', '┘', '─'));
