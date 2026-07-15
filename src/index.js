@@ -207,32 +207,54 @@ async function forwardLatestMessage(client, sourceGroupId) {
 
     // Use pupPage directly to avoid Store.ConversationMsgs.loadEarlierMsgs, which
     // calls chat.waitForChatLoading() on an undefined chat when the local store
-    // hasn't fully populated yet.
-    const rawMessages = await client.pupPage.evaluate(async (chatId) => {
-      const chatWid = window.Store.WidFactory.createWid(chatId);
-      let chat = window.Store.Chat.get(chatWid);
-      if (!chat) {
-        const result = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);
-        chat = result?.chat;
+    // hasn't fully populated yet. Everything here is wrapped so a WhatsApp Web
+    // internals change surfaces a real diagnostic instead of a minified page
+    // error that crosses the puppeteer boundary as an opaque "r".
+    const result = await client.pupPage.evaluate(async (chatId) => {
+      try {
+        const Store = window.Store;
+        if (!Store || !Store.WidFactory || !Store.Chat) {
+          return { error: 'WhatsApp Store not ready (WidFactory/Chat missing)' };
+        }
+        const chatWid = Store.WidFactory.createWid(chatId);
+        let chat = Store.Chat.get(chatWid);
+        if (!chat && Store.FindOrCreateChat?.findOrCreateLatestChat) {
+          try {
+            const res = await Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);
+            chat = res?.chat || res;
+          } catch (e) {
+            return { error: `findOrCreateLatestChat failed: ${e && e.message ? e.message : e}` };
+          }
+        }
+        if (!chat) return { messages: [], note: 'chat not found in local Store yet' };
+        const msgs = (chat.msgs && chat.msgs.getModelsArray) ? chat.msgs.getModelsArray() : [];
+        const messages = msgs
+          .filter(m => !m.isNotification)
+          .slice(-50)
+          .map(m => ({
+            id: m.id?._serialized,
+            body: m.body || '',
+            from: m.from?._serialized || m.id?.remote?._serialized || '',
+            author: m.author?._serialized || '',
+            timestamp: m.t || 0,
+            fromMe: !!m.id?.fromMe,
+            hasMedia: !!m.hasMedia,
+            type: m.type || '',
+          }));
+        return { messages };
+      } catch (e) {
+        return { error: `page evaluate threw: ${e && e.message ? e.message : String(e)}` };
       }
-      if (!chat) return [];
-      const msgs = chat.msgs?.getModelsArray() || [];
-      return msgs
-        .filter(m => !m.isNotification)
-        .slice(-50)
-        .map(m => ({
-          id: m.id?._serialized,
-          body: m.body || '',
-          from: m.from?._serialized || m.id?.remote?._serialized || '',
-          author: m.author?._serialized || '',
-          timestamp: m.t || 0,
-          fromMe: !!m.id?.fromMe,
-          hasMedia: !!m.hasMedia,
-          type: m.type || '',
-        }));
     }, sourceGroupId);
 
-    const messages = rawMessages;
+    if (result.error) {
+      console.error(`[bot] Could not read messages for "${groupName}": ${result.error}`);
+      return;
+    }
+    if (result.note) {
+      console.log(`[bot] ${result.note} for "${groupName}".`);
+    }
+    const messages = result.messages || [];
 
     let latest = null;
     for (let i = messages.length - 1; i >= 0; i--) {
